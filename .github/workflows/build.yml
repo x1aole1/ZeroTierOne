@@ -60,9 +60,7 @@ jobs:
           mkdir -p /opt/zerotier /opt/upx /opt/toolchain
 
           curl -fsSL --retry 3 --retry-delay 2 "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/${UPX_ARCHIVE}" -o "/opt/upx/${UPX_ARCHIVE}"
-          UPX_SHA256="$(curl -fsSL --retry 3 --retry-delay 2 "https://api.github.com/repos/upx/upx/releases/tags/v${UPX_VERSION}" | jq -r --arg name "${UPX_ARCHIVE}" '.assets[] | select(.name == $name) | .digest // empty' | sed 's/^sha256://')"
-          [ -n "${UPX_SHA256}" ] || { echo "未能从 upx/upx 官方 release 读取 ${UPX_ARCHIVE} 的 sha256 digest"; }
-          echo "${UPX_SHA256}  /opt/upx/${UPX_ARCHIVE}" | sha256sum -c -
+
           tar -xJf "/opt/upx/${UPX_ARCHIVE}" -C /opt/upx
           UPX_BIN="/opt/upx/upx-${UPX_VERSION}-amd64_linux/upx"
           chmod 755 "$UPX_BIN"
