@@ -16,26 +16,39 @@ jobs:
   runs-on: ubuntu-latest
   outputs:
     ver: ${{ steps.getversion.outputs.ver }}
-    cver: ${{ steps.getversion.outputs.cver }}
+    should_build: ${{ steps.getversion.outputs.should_build }}
   steps:
   - name: 检查更新
     id: getversion
+    shell: bash
     run: |
-      ver=`curl https://api.github.com/repos/zerotier/ZeroTierOne/releases/latest | jq -r '.tag_name'`
-      cver=`curl https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name'`
-      echo "最新版本${ver} 当前版本${cver}"
-      echo "ver=${ver}" >> $GITHUB_OUTPUT
-      echo "cver=${cver}" >> $GITHUB_OUTPUT
+      set -euo pipefail
+      ver="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/zerotier/ZeroTierOne/releases/latest | jq -r '.tag_name')"
+      if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)?$ ]]; then
+        echo "Unexpected ZeroTier release tag: $ver" >&2
+        exit 1
+      fi
+      if gh release view "$ver" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+        should_build=false
+        echo "ZeroTier $ver 已构建并发布，跳过"
+      else
+        should_build=true
+        echo "ZeroTier $ver 尚未发布，开始构建"
+      fi
+      echo "ver=${ver}" >> "$GITHUB_OUTPUT"
+      echo "should_build=${should_build}" >> "$GITHUB_OUTPUT"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   - name: delete-workflow
     uses: Mattraks/delete-workflow-runs@main
     with:
       token: ${{ secrets.GITHUB_TOKEN }}
       retain_days: 0
       keep_minimum_runs: 0
-      
+
  build:
     needs: check
-    if: ${{ needs.check.outputs.ver != needs.check.outputs.cver }}
+    if: ${{ needs.check.outputs.should_build == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -66,10 +79,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 下载编译工具链
+        shell: bash
         run: |
+          set -euo pipefail
           echo -e "\n\033[42;31;5;1m 开始克隆${{ needs.check.outputs.ver }}源码... \n\033[0m"
-          git clone https://github.com/zerotier/ZeroTierOne -b ${{ needs.check.outputs.ver }} /opt/zt
-          case $TARGET in 
+          git clone --depth 1 --branch "${{ needs.check.outputs.ver }}" https://github.com/zerotier/ZeroTierOne /opt/zt
+          case $TARGET in
               mipsel)
                 MUSL_URI=mipsel-linux-muslsf-cross
                 ;;
@@ -90,17 +105,23 @@ jobs:
                 ;;
             esac
           echo "MUSL_URI=${MUSL_URI}" >> $GITHUB_ENV
-          mkdir -p /opt/musl_gcc 
+          mkdir -p /opt/musl_gcc
           echo -e "\n\033[42;31;5;1m 开始下载musl工具链.. \n\033[0m"
-          wget -q -c https://github.com/lmq8267/Toolchain/releases/download/musl-cross/$MUSL_URI.tgz -P /opt/musl_gcc/
+          TOOLCHAIN_ARCHIVE="$MUSL_URI.tgz"
+          TOOLCHAIN_URL="https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${TOOLCHAIN_ARCHIVE}"
+          curl -fsSL --retry 3 --retry-delay 2 "$TOOLCHAIN_URL" -o "/opt/musl_gcc/${TOOLCHAIN_ARCHIVE}"
+          TOOLCHAIN_SHA256="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/lmq8267/Toolchain/releases/tags/musl-cross | jq -r --arg name "${TOOLCHAIN_ARCHIVE}" '.assets[] | select(.name == $name) | .digest // empty' | sed 's/^sha256://')"
+          [ -n "$TOOLCHAIN_SHA256" ] || { echo "未能读取 ${TOOLCHAIN_ARCHIVE} 的 sha256 digest"; exit 1; }
+          echo "$TOOLCHAIN_SHA256  /opt/musl_gcc/${TOOLCHAIN_ARCHIVE}" | sha256sum -c -
           echo -e "\n\033[42;31;5;1m 开始解压musl工具链.. \n\033[0m"
-          tar -xf /opt/musl_gcc/$MUSL_URI.tgz -C /opt/musl_gcc/
+          tar -xf "/opt/musl_gcc/${TOOLCHAIN_ARCHIVE}" -C /opt/musl_gcc/
           echo -e "\n\033[42;31;5;1m 查看musl-gcc信息 \n\033[0m"
           /opt/musl_gcc/$MUSL_URI/bin/${{ matrix.GCC }}-gcc -v
-      - 
+      -
         name: 编译zerotier
         shell: bash
         run: |
+          set -euo pipefail
           cd /opt/zt
           echo -e "\n\033[42;31;5;1m 修改zerotier源码 \n\033[0m"
           sed -i 's|-fPIC -fPIE|-fPIC -fPIE -static|g' ./make-linux.mk
@@ -109,44 +130,41 @@ jobs:
           sed -i 's|override CXXFLAGS+=-march=armv5t -mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|override CXXFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' ./make-linux.mk
           sed -i 's|override CFLAGS+=-mfloat-abi=hard -march=armv6zk -marm -mfpu=vfp -mno-unaligned-access -mtp=cp15 -mcpu=arm1176jzf-s|override CFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' ./make-linux.mk
           sed -i 's|override CXXFLAGS+=-mfloat-abi=hard -march=armv6zk -marm -mfpu=vfp -fexceptions -mno-unaligned-access -mtp=cp15 -mcpu=arm1176jzf-s|override CXXFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' ./make-linux.mk
-          
+
           if [[ $TARGET == mipsel ]] ; then
             echo -e "\n\033[42;31;5;1m 修改mipsel架构密钥存储路径 \n\033[0m"
             sed -i 's|/var/lib/zerotier-one|/etc/storage/zerotier-one|g' ./osdep/OSUtils.cpp
           fi
-          
+
           if [[ $TARGET == mipsel-opt ]] ; then
             echo -e "\n\033[42;31;5;1m 修改mipsel架构Entware密钥存储路径 \n\033[0m"
             sed -i 's|/var/lib/zerotier-one|/opt/var/lib/zerotier-one|g' ./osdep/OSUtils.cpp
           fi
-          
+
           if [[ $TARGET == arm7l-opt ]] ; then
             echo -e "\n\033[42;31;5;1m 修改arm7l架构Entware密钥存储路径 \n\033[0m"
             sed -i 's|/var/lib/zerotier-one|/opt/var/lib/zerotier-one|g' ./osdep/OSUtils.cpp
           fi
-          
+
           if [[ $TARGET == arm7l-etc ]] ; then
             echo -e "\n\033[42;31;5;1m 修改arm7l架构Entware密钥存储路径 \n\033[0m"
             sed -i 's|/var/lib/zerotier-one|/etc/zerotier-one|g' ./osdep/OSUtils.cpp
           fi
-          
+
           if [[ $TARGET == arm7l-koolshare ]] ; then
             echo -e "\n\033[42;31;5;1m 修改arm7l架构koolshare密钥存储路径 \n\033[0m"
             sed -i 's|/var/lib/zerotier-one|/koolshare/configs/zerotier-one|g' ./osdep/OSUtils.cpp
           fi
-          
+
           if [[ $TARGET == arm7l-swrt ]] ; then
             echo -e "\n\033[42;31;5;1m 修改arm7l架构swrt密钥存储路径 \n\033[0m"
             sed -i 's|/var/lib/zerotier-one|/jffs/softcenter/etc/zerotier-one|g' ./osdep/OSUtils.cpp
           fi
-          
-          cat ./osdep/OSUtils.cpp | grep /zerotier-one
-          if [ $(cat ./osdep/LinuxEthernetTap.cpp | grep -c "ioctl(sock, SIOCSIFHWADDR, (void") -eq 2 ]; then
-            MAC="$(grep -n "ioctl(sock, SIOCSIFHWADDR, (void" ./osdep/LinuxEthernetTap.cpp | head -2 | tail -1 | awk '{print $1}' | tr -d ": ")" && echo -e "\n\033[42;31;5;1m 删除第 ${MAC} 行 \n\033[0m" &&  sed -i "$((MAC)),+5d" ./osdep/LinuxEthernetTap.cpp && cat ./osdep/LinuxEthernetTap.cpp | grep MAC
-          fi
-          
-          sed -i '/ifr.ifr_flags |= IFF_UP;/a\ \ \ \ ifr.ifr_flags &= ~IFF_NOARP;\n\ \ \ \ ifr.ifr_flags &= ~IFF_NOTRAILERS;' ./osdep/LinuxEthernetTap.cpp
-          
+
+          grep /zerotier-one ./osdep/OSUtils.cpp
+          echo -e "\n\033[42;31;5;1m 应用旧内核TAP兼容补丁（set MAC/MTU before UP） \n\033[0m"
+          python3 "$GITHUB_WORKSPACE/tools/patch-zerotier-linux-tap.py" ./osdep/LinuxEthernetTap.cpp
+
           echo -e "\n\033[42;31;5;1m 设置编译环境变量 \n\033[0m"
           sudo timedatectl set-timezone "Asia/Shanghai"
           export PATH=$PATH:/opt/musl_gcc/${{ env.MUSL_URI }}/bin
@@ -161,7 +179,7 @@ jobs:
           export CXXFLAGS="$CFLAGS"
           export TARGET_CFLAGS=" -DNDEBUG -DBOOST_NO_FENV_H -DBOOST_DISABLE_ASSERTS"
           echo -e "\n\033[42;31;5;1m 开始编译... \n\033[0m"
-          
+
           CC=${{ matrix.GCC }}-gcc \
           STRIP=${{ matrix.GCC }}-strip \
           ZT_STATIC=1 \
@@ -173,9 +191,10 @@ jobs:
         with:
           version: v4.2.4
           install-only: true
-      - 
+      -
         name: 剥离压缩
         run: |
+          set -euo pipefail
           cd /opt/zt
           echo -e "\n\033[42;31;5;1m 查看二进制程序信息 \n\033[0m"
           file zerotier-one
@@ -192,10 +211,11 @@ jobs:
           du -k zerotier-one
           echo -e "\n\033[42;31;5;1m 编译时间：$(date '+%Y-%m-%d %H:%M:%S') \n\033[0m"
           echo "build_time=$(date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
-      - 
+      -
         name: 打包上传
         shell: bash
         run: |
+         set -euo pipefail
          BASE=`pwd`
          if [[ $TARGET == mipsel ]] ; then
            mkdir -p /opt/bin/zerotier-one
@@ -217,9 +237,14 @@ jobs:
               cp -rf /opt/bin/zerotier-one/MD5.txt install/${{ needs.check.outputs.ver }}/MD5.txt
               cp -rf /opt/bin/zerotier.tar.gz install/${{ needs.check.outputs.ver }}/zerotier.tar.gz
               cp -rf /opt/bin/tarMD5.txt install/${{ needs.check.outputs.ver }}/tarMD5.txt
-              git add .
-              git commit -am "上传时间： $(date '+%Y-%m-%d %H:%M:%S')"
-              git push --quiet "https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+              (cd install && sha256sum zero.tar.gz zerotier-one [0-9]*/zerotier-one [0-9]*/zerotier.tar.gz > SHA256SUMS)
+              git add install/${{ needs.check.outputs.ver }} install/SHA256SUMS
+              if ! git diff --cached --quiet; then
+                git commit -m "上传时间： $(date '+%Y-%m-%d %H:%M:%S')"
+                git push --quiet "https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+              else
+                echo "没有新的 mipsel 产物需要提交"
+              fi
            fi
             mkdir -p /opt/ipk
             wget -q -c https://github.com/lmq8267/ZeroTierOne/releases/download/1.12.1/zerotier_1.12.2-1_mipsel-3.4.ipk -P /opt/ipk/
@@ -250,7 +275,7 @@ jobs:
             cd /opt/ipk
             tar czvf data.tar.gz opt
             tar -czf zerotier-opt_${{ needs.check.outputs.ver }}-1_mipsel-3.4.ipk data.tar.gz control.tar.gz debian-binary
-          fi 
+          fi
          if [[ $TARGET == arm7l-opt ]] ;then
            mkdir -p /opt/bin/zerotier-one
            echo -e "\n\033[42;31;5;1m 打包arm7l-opt-zerotier \n\033[0m"
@@ -289,9 +314,10 @@ jobs:
            cd /opt/bin
            tar czvf zerotier-arm7l-koolshare.tar.gz zerotier-one
          fi
-         
-         ls -R /opt || true && ls -R . || true
-      #- 
+
+         find /opt/bin -maxdepth 3 -type f -print || true
+         find /opt/ipk -maxdepth 2 -type f -print || true
+      #-
         #name: 打包梅林离线安装包
         #shell: bash
         #run: |
@@ -322,7 +348,7 @@ jobs:
          #cd /opt/swrt
          #tar czvf zerotier-${{ needs.check.outputs.ver }}.tar.gz zerotier
          #fi
-      #- 
+      #-
         #name: 发布prerelease
         #uses: softprops/action-gh-release@v1
         #with:
@@ -337,7 +363,7 @@ jobs:
           #prerelease: true
           #tag_name: swrt
           #files: /opt/bin/zerotier-arm7l-swrt.tar.gz
-      #- 
+      #-
         #name: 发布prerelease
         #uses: softprops/action-gh-release@v1
         #with:
@@ -351,15 +377,15 @@ jobs:
           #prerelease: true
           #tag_name: koolshare
           #files: /opt/koolshare/zerotier-${{ needs.check.outputs.ver }}.tar.gz
-      - 
+      -
         name: 发布release
-        if: matrix.TARGET != 'mipsel'
+        if: matrix.TARGET != 'mipsel' && matrix.TARGET != 'mipsel-opt'
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-           > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ needs.check.outputs.ver }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github) 
-           
+           > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ needs.check.outputs.ver }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github)
+
            **文件说明：**
 
            - **zerotier.tar.gz**    mipsel架构padavan固件压缩包 密钥路径 **/etc/storage/zerotier-one**
@@ -376,21 +402,19 @@ jobs:
 
            **[官方更新说明](https://github.com/zerotier/ZeroTierOne/releases)**
           tag_name: ${{ needs.check.outputs.ver }}
+          fail_on_unmatched_files: true
           files: |
-            /opt/bin/zerotier-arm7l-opt.tar.gz
-            /opt/bin/zerotier-arm7l-etc.tar.gz
-            /opt/bin/zerotier-arm7l-swrt.tar.gz
-            /opt/bin/zerotier-arm7l-koolshare.tar.gz
+            /opt/bin/*.tar.gz
 
-      - 
+      -
         name: 发布release
         if: matrix.TARGET == 'mipsel'
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-           > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ needs.check.outputs.ver }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github) 
-           
+           > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ needs.check.outputs.ver }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github)
+
            **文件说明：**
 
            - **zerotier.tar.gz**    mipsel架构padavan固件压缩包 密钥路径 **/etc/storage/zerotier-one**
@@ -407,23 +431,43 @@ jobs:
 
            **[官方更新说明](https://github.com/zerotier/ZeroTierOne/releases)**
           tag_name: ${{ needs.check.outputs.ver }}
+          fail_on_unmatched_files: true
           files: |
-            /opt/bin/zerotier.tar.gz
+            /opt/bin/*.tar.gz
             /opt/bin/tarMD5.txt
             /opt/bin/zerotier-one/zerotier-one
             /opt/bin/zerotier-one/MD5.txt
-            /opt/ipk/zerotier-opt_${{ needs.check.outputs.ver }}-1_mipsel-3.4.ipk
-            /opt/bin/zerotier-mipsel-opt.tar.gz
-            /opt/ipk/zerotier_${{ needs.check.outputs.ver }}-1_mipsel-3.4.ipk
-            
+            /opt/ipk/*.ipk
+
+      -
+        name: 发布release
+        if: matrix.TARGET == 'mipsel-opt'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+           > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ needs.check.outputs.ver }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github)
+
+           **文件说明：**
+
+           - **zerotier-mipsel-opt.tar.gz**   mipsel架构密钥路径 **/opt/var/lib/zerotier-one**
+           - **zerotier-opt_${{ needs.check.outputs.ver }}-1_mipsel-3.4.ipk**   Entware软件包密钥路径 **/opt/var/lib/zerotier-one**
+
+           **[官方更新说明](https://github.com/zerotier/ZeroTierOne/releases)**
+          tag_name: ${{ needs.check.outputs.ver }}
+          fail_on_unmatched_files: true
+          files: |
+            /opt/bin/*.tar.gz
+            /opt/ipk/*.ipk
+
       #- name: Push changes
         #uses: ad-m/github-push-action@master
         #with:
           #force_with_lease: true
-          
+
  keepalive-workflow:
     # github超过60天未提交将自动停止工作流
-    name: 工作流保活 
+    name: 工作流保活
     runs-on: ubuntu-latest
     permissions:
       actions: write

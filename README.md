@@ -22,3 +22,33 @@
 ### `Fork`
 
 [![Forkers](https://bytecrank.com/nastyox/reporoster/php/forkersSVG.php?user=lmq8267&repo=poster-design)](https://github.com/lmq8267/ZeroTierOne/network/members)
+
+## 可靠性与校验
+
+本 fork 面向 Padavan/mipsel 场景提供预编译 `zerotier-one`。为避免下载到 GitHub HTML 页面、旧版兜底包或损坏文件导致程序不可用，安装脚本会下载二进制及对应 MD5，并在启动前校验。
+
+维护者发布或手动上传二进制时，请同时更新以下校验文件：
+
+- `install/<版本>/MD5.txt`：对应 `install/<版本>/zerotier-one` 的 MD5。
+- `install/<版本>/tarMD5.txt`：对应 `install/<版本>/zerotier.tar.gz` 的 MD5。
+- `install/SHA256SUMS`：仓库内所有发行二进制和 tar 包的 SHA-256 清单，供人工审查和发布前复核。
+
+发布前建议执行：
+
+```sh
+sh -n install/zerotier.sh
+bash -n install/hiboyzerotier.sh
+sh -n install/installzero.sh
+(cd install && sha256sum -c SHA256SUMS)
+```
+
+## 二进制来源风险
+
+当前仓库只保存预编译 mipsel 二进制和安装脚本，不包含完整 ZeroTier 源码与交叉编译工具链，因此只能校验“仓库里的文件下载后没有损坏或被替换”，不能从本仓库证明这些二进制一定由上游源码可复现构建。
+
+降低风险的建议：
+
+1. 优先使用 `tools/verify-release-artifacts.sh` 做发布前审计，确认二进制是 ELF、压缩包可解包、MD5 与 SHA-256 清单一致。
+2. 发布新版本时保留构建环境、上游 ZeroTier commit、交叉编译工具链版本和构建日志。
+3. 如果要达到更高可信度，应新增 CI 从 ZeroTier 上游源码交叉编译 mipsel 产物，并把源码 commit、构建脚本和校验和一起发布。
+4. 不建议从未知 fork 或不透明网盘替换 `zerotier-one`；替换后必须同步更新 `MD5.txt`、`tarMD5.txt` 和 `SHA256SUMS`。
