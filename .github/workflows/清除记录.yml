@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: '0 20 * * *'
   workflow_dispatch:
+permissions:
+  actions: write
+  contents: write
+
 jobs:
 
   build:
@@ -11,17 +15,17 @@ jobs:
     steps:
       -
         name: 检查代码仓库
-        uses: actions/checkout@v3
-      - 
+        uses: actions/checkout@v4
+      -
        name: 删除工作流
        uses: GitRML/delete-workflow-runs@main
        with:
-        token: ${{ secrets.c8 }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         retain_days: 2
         keep_minimum_runs: 0
   keepalive-workflow:
     # github超过60天未提交将自动停止工作流
-    name: 工作流保活 
+    name: 工作流保活
     runs-on: ubuntu-latest
     permissions:
       actions: write

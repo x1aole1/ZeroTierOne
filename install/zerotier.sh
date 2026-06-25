@@ -51,14 +51,14 @@ if [ -z "$secret" ]; then
 else
    logger -t "【ZeroTier】" "找到密钥文件，正在启动，请稍候..."
    echo "找到密钥文件，正在启动，请稍候..."
-   echo "$secret" >$config_path/identity.secret
-   $PROGIDT getpublic $config_path/identity.secret >$config_path/identity.public
+   echo "$secret" >"$config_path/identity.secret"
+   $PROGIDT getpublic "$config_path/identity.secret" >"$config_path/identity.public"
 fi
 
-if [ -n "$planet"]; then
+if [ -n "$planet" ]; then
 		logger -t "【ZeroTier】" "找到planet,正在写入..."
 		echo "$planet" >$config_path/planet.tmp
-		base64 -d $config_path/planet.tmp >$config_path/planet
+		base64 -d "$config_path/planet.tmp" >"$config_path/planet"
 fi
 if [ -f "$PLANET" ]; then
 		if [ ! -s "$PLANET" ]; then
@@ -66,15 +66,21 @@ if [ -f "$PLANET" ]; then
 		else
 			logger -t "【ZeroTier】" "找到自定义planet文件,开始创建..."
 			planet="$(base64 $PLANET)"
-			cp -f $PLANET $config_path/planet
-			rm -f $PLANET
+			cp -f "$PLANET" "$config_path/planet"
+			rm -f "$PLANET"
 			nvram set zerotier_planet="$planet"
 			nvram commit
 		fi
 fi
-$PROG $args $config_path >/dev/null 2>&1 &
-while [ ! -f $config_path/zerotier-one.port ]; do
-		sleep 1
+$PROG $args "$config_path" >/dev/null 2>&1 &
+count=0
+while [ ! -f "$config_path/zerotier-one.port" ]; do
+	sleep 1
+	count=$(expr $count + 1)
+	if [ $count -ge 30 ]; then
+		logger -t "【ZeroTier】" "等待 zerotier-one.port 超时，程序可能启动失败"
+		return 1
+	fi
 done
 if [ -n "$cfg" ]; then
   $PROGCLI join $cfg
@@ -111,18 +117,18 @@ rules() {
 	count=0
         while [ $count -lt 5 ]
         do
-       ztstatus=$(zerotier-cli info | awk '{print $5}')
+       ztstatus=$($PROGCLI info | awk '{print $5}')
        if [ "$ztstatus" = "OFFLINE" ]; then
         sleep 3
         elif [ "$ztstatus" = "ONLINE" ]; then
-        ztid=$(zerotier-cli info | awk '{print $3}')
+        ztid=$($PROGCLI info | awk '{print $3}')
         logger -t "【ZeroTier】" "若是官网没有此设备，请手动绑定此设备ID  $ztid "
 	echo "若是官网没有此设备，请手动绑定此设备Node Id  $ztid "
         break
         fi
         count=$(expr $count + 1)
         done
-	if [ "$(zerotier-cli info | awk '{print $5}')" = "OFFLINE" ] ; then
+	if [ "$($PROGCLI info | awk '{print $5}')" = "OFFLINE" ] ; then
           echo "你的网络无法连接到zerotier服务器，请检查网络，程序退出"
 	  logger -t "【ZeroTier】" "你的网络无法连接到zerotier服务器，请检查网络，程序退出"
           exit 1
@@ -172,7 +178,7 @@ if [ "$zeromoonip" = "1" ]; then
    ip_addr=$moonip
 fi
 logger -t "【ZeroTier】" "ZeroTier Moon服务器 IP $ip_addr"
-if [ -e $config_path/identity.public ]; then
+if [ -e "$config_path/identity.public" ]; then
    $PROGIDT initmoon $config_path/identity.public > $config_path/moon.json
    if `sed -i "s/\[\]/\[ \"$ip_addr\/9993\" \]/" $config_path/moon.json >/dev/null 2>/dev/null`; then
        logger -t "【ZeroTier】" "生成moon配置文件成功"
@@ -203,9 +209,9 @@ if [ -e $config_path/identity.public ]; then
       
 remove_moon(){
 zmoonid="$(nvram get zerotiermoon_id)"
-if [ ! -n "$zmoonid"]; then
-  rm -f $config_path/moons.d/000000$zmoonid.moon
-  rm -f $config_path/moon.json
+if [ -n "$zmoonid" ]; then
+  rm -f "$config_path/moons.d/000000$zmoonid.moon"
+  rm -f "$config_path/moon.json"
   nvram set zerotiermoon_id=""
 fi
 } 
@@ -294,23 +300,23 @@ if [ ! -s "$SVC_PATH" ] ; then
       logger -t "【ZeroTier】" "您的设备/etc/storage空间剩余"$zerosize"M，不足2M，将下载安装包到内存安装"
       if [ ! -z "$tag" ] ; then
       logger -t "【ZeroTier】" "获取到最新版本$tag ,开始下载"
-      curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/$tag/zerotier-one" || curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/zerotier-one"
-      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/$tag/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/MD5.txt"
+      curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/$tag/zerotier-one" || curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/zerotier-one"
+      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/$tag/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/MD5.txt"
       else
-      logger -t "【ZeroTier】" "未获取到最新版本号 ,开始下载1.10.6版本"
-      curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/1.10.6/zerotier-one" || curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.10.6/zerotier-one"
-      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/1.10.6/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.10.6/MD5.txt"
+      logger -t "【ZeroTier】" "未获取到最新版本号 ,开始下载1.16.2版本"
+      curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/1.16.2/zerotier-one" || curl -L -k -S -o "/tmp/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.16.2/zerotier-one"
+      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/1.16.2/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.16.2/MD5.txt"
       fi
       else
       SVC_PATH="/etc/storage/zerotier-one/zerotier-one"
       if [ ! -z "$tag" ] ; then
       logger -t "【ZeroTier】" "获取到最新版本$tag ,开始下载"
-      curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/$tag/zerotier-one" || curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/zerotier-one"
-      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/$tag/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/MD5.txt"
+      curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/$tag/zerotier-one" || curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/zerotier-one"
+      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/$tag/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/$tag/MD5.txt"
       else
-      logger -t "【ZeroTier】" "未获取到最新版本号 ,开始下载1.10.6版本"
-      curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/1.10.6/zerotier-one" || curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.10.6/zerotier-one"
-      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/blob/dev/install/1.10.6/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.10.6/MD5.txt"
+      logger -t "【ZeroTier】" "未获取到最新版本号 ,开始下载1.16.2版本"
+      curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/1.16.2/zerotier-one" || curl -L -k -S -o "/etc/storage/zerotier-one/zerotier-one" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.16.2/zerotier-one"
+      curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/raw/dev/install/1.16.2/MD5.txt" || curl -L -k -S -o "/etc/storage/zerotier-one/MD5.txt" --connect-timeout 10 --retry 3 "https://fastly.jsdelivr.net/gh/lmq8267/ZeroTierOne@master/install/1.16.2/MD5.txt"
       fi
    fi
 fi

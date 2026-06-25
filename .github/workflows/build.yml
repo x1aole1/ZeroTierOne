@@ -1,91 +1,111 @@
-name: test
+name: 编译测试
 
 on:
-  #schedule:
-    #- cron: '0 3,20 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  UPX_VERSION: 4.1.0
+  UPX_ARCHIVE: upx-4.1.0-amd64_linux.tar.xz
+  TOOLCHAIN_ARCHIVE: mipsel-linux-muslsf-cross.tgz
+  TOOLCHAIN_DIR: mipsel-linux-muslsf-cross
+  TOOLCHAIN_TRIPLE: mipsel-linux-muslsf
 
 jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
       ver: ${{ steps.getversion.outputs.ver }}
-      cver: ${{ steps.getversion.outputs.cver }}
+      release_tag: ${{ steps.getversion.outputs.release_tag }}
+      should_build: ${{ steps.getversion.outputs.should_build }}
     steps:
-      -
-        name: Get version
+      - name: Get version
         id: getversion
+        shell: bash
         run: |
-          ver=`curl https://api.github.com/repos/zerotier/ZeroTierOne/releases/latest | jq -r '.tag_name'`
-          cver=`curl https://api.github.com/repos/lmq8267/vnts/releases/latest | jq -r '.tag_name'`
-          echo "ver=${ver}" >> $GITHUB_OUTPUT
-          echo "cver=${cver}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          ver="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/zerotier/ZeroTierOne/releases/latest | jq -r '.tag_name')"
+          if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)?$ ]]; then
+            echo "Unexpected ZeroTier release tag: $ver" >&2
+            exit 1
+          fi
+          release_tag="zerotier-${ver}"
+          if gh release view "$release_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            should_build=false
+            echo "${release_tag} already exists, skip build"
+          else
+            should_build=true
+            echo "${release_tag} does not exist, build required"
+          fi
+          echo "ver=${ver}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "should_build=${should_build}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build:
     runs-on: ubuntu-latest
     needs: check
-    if: ${{ needs.check.outputs.ver != needs.check.outputs.cver }}
+    if: ${{ needs.check.outputs.should_build == 'true' }}
     steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v3
-      - name: Init submodules
-        uses: snickerbockers/submodules-init@v4
-      - 
-        name: Build
-        run: | 
-          git clone https://github.com/zerotier/ZeroTierOne -b ${{ needs.check.outputs.ver }} /opt/zero
-          git clone https://github.com/lmq8267/cloudflared.git /opt/st
-          tar -xvf /opt/st/upx-3.95-amd64_linux.tar.xz -C /opt
-          chmod 777 /opt/upx-3.95-amd64_linux/upx
-          mkdir -p /opt/zerotier
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ needs.check.outputs.ver }}" https://github.com/zerotier/ZeroTierOne /opt/zero
+          mkdir -p /opt/zerotier /opt/upx /opt/toolchain
+
+          curl -fsSL --retry 3 --retry-delay 2 "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/${UPX_ARCHIVE}" -o "/opt/upx/${UPX_ARCHIVE}"
+          UPX_SHA256="$(curl -fsSL --retry 3 --retry-delay 2 "https://api.github.com/repos/upx/upx/releases/tags/v${UPX_VERSION}" | jq -r --arg name "${UPX_ARCHIVE}" '.assets[] | select(.name == $name) | .digest // empty' | sed 's/^sha256://')"
+          [ -n "${UPX_SHA256}" ] || { echo "未能从 upx/upx 官方 release 读取 ${UPX_ARCHIVE} 的 sha256 digest"; exit 1; }
+          echo "${UPX_SHA256}  /opt/upx/${UPX_ARCHIVE}" | sha256sum -c -
+          tar -xJf "/opt/upx/${UPX_ARCHIVE}" -C /opt/upx
+          UPX_BIN="/opt/upx/upx-${UPX_VERSION}-amd64_linux/upx"
+          chmod 755 "$UPX_BIN"
+          "$UPX_BIN" --version
+
+          TOOLCHAIN_URL="https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${TOOLCHAIN_ARCHIVE}"
+          curl -fsSL --retry 3 --retry-delay 2 "$TOOLCHAIN_URL" -o "/opt/toolchain/${TOOLCHAIN_ARCHIVE}"
+          TOOLCHAIN_SHA256="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/lmq8267/Toolchain/releases/tags/musl-cross | jq -r --arg name "${TOOLCHAIN_ARCHIVE}" '.assets[] | select(.name == $name) | .digest // empty' | sed 's/^sha256://')"
+          [ -n "${TOOLCHAIN_SHA256}" ] || { echo "未能读取 ${TOOLCHAIN_ARCHIVE} 的 sha256 digest"; exit 1; }
+          echo "${TOOLCHAIN_SHA256}  /opt/toolchain/${TOOLCHAIN_ARCHIVE}" | sha256sum -c -
+          tar -xzf "/opt/toolchain/${TOOLCHAIN_ARCHIVE}" -C /opt/toolchain
+
+          export PATH="/opt/toolchain/${TOOLCHAIN_DIR}/bin:$PATH"
+          export CC="${TOOLCHAIN_TRIPLE}-gcc"
+          export CXX="${TOOLCHAIN_TRIPLE}-g++"
+          export AR="${TOOLCHAIN_TRIPLE}-ar"
+          export LD="${TOOLCHAIN_TRIPLE}-ld"
+          export RANLIB="${TOOLCHAIN_TRIPLE}-ranlib"
+          export STRIP="${TOOLCHAIN_TRIPLE}-strip"
+
           cd /opt/zero
           sed -i '/include objects.mk/i    LDLIBS+=-latomic' make-linux.mk
           sed -i 's|LDFLAGS=-pie -Wl,-z,relro,-z,now|LDFLAGS=-Wl,-z,relro,-z,now|g' make-linux.mk
           sed -i 's|-fPIC -fPIE|-fPIC -fPIE -static|g' make-linux.mk
-          sed -i 's|override CFLAGS+=-march=armv5t -mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|override CFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' make-linux.mk
-          sed -i 's|override CXXFLAGS+=-march=armv5t -mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|override CXXFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' make-linux.mk
-          sed -i 's|override CFLAGS+=-mfloat-abi=hard -march=armv6zk -marm -mfpu=vfp -mno-unaligned-access -mtp=cp15 -mcpu=arm1176jzf-s|override CFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' make-linux.mk
-          sed -i 's|override CXXFLAGS+=-mfloat-abi=hard -march=armv6zk -marm -mfpu=vfp -fexceptions -mno-unaligned-access -mtp=cp15 -mcpu=arm1176jzf-s|override CXXFLAGS+=-mfloat-abi=soft -msoft-float -mno-unaligned-access -marm|g' make-linux.mk
           sed -i 's|/var/lib/zerotier-one|/etc/storage/zerotier-one|g' ./osdep/OSUtils.cpp
-          #sed -i '/if (ioctl(sock,SIOCSIFHWADDR,(void *)&ifr) < 0) {/d' ./osdep/LinuxEthernetTap.cpp
-          mkdir -p ./musl_gcc 
-          sudo rm -rf /usr/bin/ar
-          sudo rm -rf /usr/bin/ld
-          sudo rm -rf /usr/bin/gcc
-          sudo rm -rf /usr/bin/g++
-          sudo rm -rf /usr/bin/clang
-          sudo rm -rf /usr/bin/clang++
-          sudo rm -rf /usr/bin/strip
-          wget -c https://musl.cc/mipsel-linux-musl-cross.tgz -P ./musl_gcc/
-          tar zxf ./musl_gcc/mipsel-linux-musl-cross.tgz -C ./musl_gcc/
-          sudo ln -s $(pwd)/musl_gcc/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc /usr/bin/gcc
-          sudo ln -s $(pwd)/musl_gcc/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++ /usr/bin/g++
-          sudo ln -s $(pwd)/musl_gcc/mipsel-linux-musl-cross/bin/mipsel-linux-musl-ld /usr/bin/ld
-          sudo ln -s $(pwd)/musl_gcc/mipsel-linux-musl-cross/bin/mipsel-linux-musl-ar /usr/bin/ar
-          sudo ln -s $(pwd)/musl_gcc/mipsel-linux-musl-cross/bin/mipsel-linux-musl-strip /usr/bin/strip
-          #CC=mipsel-linux-musl-gcc \
-          STRIP=/usr/bin/strip \
-          ZT_STATIC=1 \
-          OSTYPE="Linux" \
-          make
+          ZT_STATIC=1 OSTYPE="Linux" make -j"$(nproc)"
           cp -f /opt/zero/zerotier-one /opt/zerotier/zerotier-one
           cd /opt/zerotier
-          /usr/bin/strip /opt/zerotier/zerotier-one
+          "$STRIP" zerotier-one
           ln -sf zerotier-one zerotier-cli
           ln -sf zerotier-one zerotier-idtool
-          /opt/upx-3.95-amd64_linux/upx --lzma --best zerotier-one
+          "$UPX_BIN" --lzma --best zerotier-one
           cd /opt
           tar czvf zerotier.tar.gz zerotier
-          echo $(md5sum zerotier.tar.gz | awk '{print $1;}') >MD5.txt
-      - 
-        name: Release
-        uses: softprops/action-gh-release@v1
+          md5sum zerotier.tar.gz | awk '{print $1}' > MD5.txt
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.c8 }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: true
-          tag_name: test
+          tag_name: ${{ needs.check.outputs.release_tag }}
+          fail_on_unmatched_files: true
           files: |
-              /opt/zerotier.tar.gz
-              /opt/zerotier/zerotier-one
-              /opt/MD5.txt
+            /opt/zerotier.tar.gz
+            /opt/zerotier/zerotier-one
+            /opt/MD5.txt

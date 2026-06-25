@@ -178,17 +178,17 @@ if [ ! -s "$SVC_PATH" ] ; then
                 wgetcurl.sh "/etc/storage/zerotier-one/zerotier.tar.gz" "https://github.com/lmq8267/ZeroTierOne/releases/download/$tag/zerotier.tar.gz" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/$tag/zerotier.tar.gz"
            fi
        else
-              logger -t "【ZeroTier】" "最新版本获取失败，开始下载备用程序zerotier_v1.10.6"
+              logger -t "【ZeroTier】" "最新版本获取失败，开始下载备用程序zerotier_v1.16.2"
               logger -t "【ZeroTier】" "若出现反复更新又下载，请关闭自动更新"
 	      rm -rf /etc/storage/zerotier-one/MD5.txt
-              wgetcurl.sh "/etc/storage/zerotier-one/MD5.txt" "https://github.com/lmq8267/ZeroTierOne/releases/download/1.10.6/tarMD5.txt" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/1.10.6/tarMD5.txt"
+              wgetcurl.sh "/etc/storage/zerotier-one/MD5.txt" "https://github.com/lmq8267/ZeroTierOne/releases/download/1.16.2/tarMD5.txt" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/1.16.2/tarMD5.txt"
               if [ "$zerosize" -lt 2 ];then
                logger -t "【ZeroTier】" "您的设备/etc/storage空间剩余"$zerosize"M，不足2M，将下载安装包到内存安装"
                [ "$zerosize" -gt 1 ] && logger -t "【ZeroTier】" "可尝试手动上传zerotier.tar.gz和MD5.txt到内部存储/etc/storage/zerotier-one/目录里"
-               wgetcurl.sh "$SVC_PATH2" "https://github.com/lmq8267/ZeroTierOne/releases/download/1.10.6/zerotier.tar.gz" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/1.10.6/zerotier.tar.gz"
+               wgetcurl.sh "$SVC_PATH2" "https://github.com/lmq8267/ZeroTierOne/releases/download/1.16.2/zerotier.tar.gz" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/1.16.2/zerotier.tar.gz"
                else
                 logger -t "【ZeroTier】" "您的设备/etc/storage空间充足:"$zerosize"M，将下载安装包到内部存储"
-                wgetcurl.sh "/etc/storage/zerotier-one/zerotier.tar.gz" "https://github.com/lmq8267/ZeroTierOne/releases/download/1.10.6/zerotier.tar.gz" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/1.10.6/zerotier.tar.gz"
+                wgetcurl.sh "/etc/storage/zerotier-one/zerotier.tar.gz" "https://github.com/lmq8267/ZeroTierOne/releases/download/1.16.2/zerotier.tar.gz" "https://hub.gitmirror.com/https://github.com/lmq8267/ZeroTierOne/releases/download/1.16.2/zerotier.tar.gz"
               fi
         fi
         [ ! -s "$SVC_PATH2" ] && [ -s "/etc/storage/zerotier-one/zerotier.tar.gz" ] && cp -rf /etc/storage/zerotier-one/zerotier.tar.gz "$SVC_PATH2"
@@ -274,13 +274,13 @@ if [ -z "$secret" ]; then
 fi
 if [ -n "$secret" ]; then
    logger -t "【ZeroTier】" "找到密钥文件，正在启动，请稍候..."
-   echo "$secret" >$config_path/identity.secret
-   $PROGIDT getpublic $config_path/identity.secret >$config_path/identity.public
+   echo "$secret" >"$config_path/identity.secret"
+   $PROGIDT getpublic "$config_path/identity.secret" >"$config_path/identity.public"
 fi
-if [ -n "$planet"]; then
+if [ -n "$planet" ]; then
 		logger -t "【ZeroTier】" "找到planet,正在写入..."
 		echo "$planet" >$config_path/planet.tmp
-		base64 -d $config_path/planet.tmp >$config_path/planet
+		base64 -d "$config_path/planet.tmp" >"$config_path/planet"
 fi
 if [ -f "$PLANET" ]; then
 		if [ ! -s "$PLANET" ]; then
@@ -288,16 +288,22 @@ if [ -f "$PLANET" ]; then
 		else
 			logger -t "【ZeroTier】" "找到自定义planet文件,开始创建..."
 			planet="$(base64 $PLANET)"
-			cp -f $PLANET $config_path/planet
-			rm -f $PLANET
+			cp -f "$PLANET" "$config_path/planet"
+			rm -f "$PLANET"
 			nvram set zerotier_planet="$planet"
 			nvram commit
 		fi
 fi
 
-$PROG $args $config_path >/dev/null 2>&1 &
-while [ ! -f $config_path/zerotier-one.port ]; do
-		sleep 1
+$PROG $args "$config_path" >/dev/null 2>&1 &
+count=0
+while [ ! -f "$config_path/zerotier-one.port" ]; do
+	sleep 1
+	count=$(expr $count + 1)
+	if [ $count -ge 30 ]; then
+		logger -t "【ZeroTier】" "等待 zerotier-one.port 超时，程序可能启动失败"
+		return 1
+	fi
 done
 
 if [ -n "$moonid" ]; then
@@ -398,7 +404,7 @@ if [ "$zeromoonip" = "1" ]; then
    ip_addr=$moonip
 fi
 logger -t "【ZeroTier】" "ZeroTier Moon服务器 IP $ip_addr"
-if [ -e $config_path/identity.public ]; then
+if [ -e "$config_path/identity.public" ]; then
    $PROGIDT initmoon $config_path/identity.public > $config_path/moon.json
    if `sed -i "s/\[\]/\[ \"$ip_addr\/9993\" \]/" $config_path/moon.json >/dev/null 2>/dev/null`; then
        logger -t "【ZeroTier】" "生成moon配置文件成功"
@@ -429,9 +435,9 @@ if [ -e $config_path/identity.public ]; then
       
 remove_moon(){
 zmoonid="$(nvram get zerotiermoon_id)"
-if [ ! -n "$zmoonid"]; then
-  rm -f $config_path/moons.d/000000$zmoonid.moon
-  rm -f $config_path/moon.json
+if [ -n "$zmoonid" ]; then
+  rm -f "$config_path/moons.d/000000$zmoonid.moon"
+  rm -f "$config_path/moon.json"
   nvram set zerotiermoon_id=""
 fi
 }  
@@ -441,7 +447,7 @@ zero_dl(){
    zerotier_start
 }
 
-case $ACTION in
+case "${ACTION:-$1}" in
 start)
 	zerotier_start
 	;;
