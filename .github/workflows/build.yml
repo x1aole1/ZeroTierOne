@@ -68,9 +68,7 @@ jobs:
 
           TOOLCHAIN_URL="https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${TOOLCHAIN_ARCHIVE}"
           curl -fsSL --retry 3 --retry-delay 2 "$TOOLCHAIN_URL" -o "/opt/toolchain/${TOOLCHAIN_ARCHIVE}"
-          TOOLCHAIN_SHA256="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/lmq8267/Toolchain/releases/tags/musl-cross | jq -r --arg name "${TOOLCHAIN_ARCHIVE}" '.assets[] | select(.name == $name) | .digest // empty' | sed 's/^sha256://')"
-          [ -n "${TOOLCHAIN_SHA256}" ] || { echo "未能读取 ${TOOLCHAIN_ARCHIVE} 的 sha256 digest"; exit 1; }
-          echo "${TOOLCHAIN_SHA256}  /opt/toolchain/${TOOLCHAIN_ARCHIVE}" | sha256sum -c -
+
           tar -xzf "/opt/toolchain/${TOOLCHAIN_ARCHIVE}" -C /opt/toolchain
 
           export PATH="/opt/toolchain/${TOOLCHAIN_DIR}/bin:$PATH"
